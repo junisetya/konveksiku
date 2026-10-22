@@ -1,24 +1,25 @@
 FROM python:3.11-slim
 
-# Set folder kerja di dalam server
 WORKDIR /app
 
-# Install library sistem yang dibutuhkan (termasuk untuk Pillow)
+# Install library sistem
 RUN apt-get update && apt-get install -y \
     build-essential \
     libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy file requirements dan install
+# Copy requirements dan install
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy seluruh sisa kode project
+# Copy SELURUH isi folder project (termasuk folder tools/)
 COPY . .
 
-# Buat folder data agar aplikasi tidak error saat menyimpan session
+# Buat folder data
 RUN mkdir -p data
 
-# Render akan menyuntikkan port otomatis ke environment variable $PORT
-# Kita gunakan perintah bawaan dari app.py kamu
+# Set PYTHONPATH agar folder /app dan /app/tools terbaca
+ENV PYTHONPATH="/app:/app/tools"
+
+# Jalankan aplikasi
 CMD ["python", "app.py"]
