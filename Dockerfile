@@ -12,13 +12,13 @@ RUN apt-get update && apt-get install -y \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy SELURUH isi folder project (termasuk folder tools/)
+# Copy SELURUH file project
 COPY . .
 
 # Buat folder data
 RUN mkdir -p data
 
-# Set PYTHONPATH agar folder /app dan /app/tools terbaca
+# KUNCI UTAMA: Daftarkan /app dan /app/tools langsung di sys.path Python saat container menyala
 ENV PYTHONPATH="/app:/app/tools"
 
 # Jalankan aplikasi
