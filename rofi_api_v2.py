@@ -29,7 +29,27 @@ from app import (  # noqa: E402  (app.py mengimpor modul ini di bagian akhir)
     session, uuid, json, re, html_escape, ValidationError, fonnte_send
 )
 from rofi_core import public_base_url, WIB  # noqa: E402
-from perf import tracking_block_reason  # noqa: E402
+def tracking_block_reason(user_agent):
+    """Kembalikan alasan bila permintaan terlihat sebagai bot."""
+    ua = (user_agent or "").lower()
+    if not ua:
+        return "User-agent kosong."
+    _INAPP_BROWSER_MARKERS = (
+        "whatsapp/", "fban", "fbav", "fb_iab", "instagram", "line/", "micromessenger",
+    )
+    if any(m in ua for m in _INAPP_BROWSER_MARKERS):
+        if "whatsappbot" in ua or "facebookexternalhit" in ua:
+            return "User-agent crawler aplikasi pesan."
+        return ""
+    _BOT_MARKERS = (
+        "preview", "bot", "crawl", "slack", "facebookexternalhit", "twitterbot",
+        "linkedinbot", "skype", "curl", "wget", "python-requests", "python-httpx",
+        "httpx", "headless",
+    )
+    for marker in _BOT_MARKERS:
+        if marker in ua:
+            return f"User-agent diperlakukan sebagai bot ({marker})."
+    return ""
 from rofi_ui import HTML  # noqa: E402
 
 datetime = __import__("datetime").datetime
