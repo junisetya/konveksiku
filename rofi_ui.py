@@ -373,8 +373,10 @@ function render(){
  const activeView=["detail","new"].includes(view)?"orders":view;
  $("#app").innerHTML=`<div class="shell">
  <aside class="side" id="side">
-  <div class="brand"><div class="mark">RJ</div><div>
-   <b>${esc(S.settings.name||"Rofi Jaya")}</b><span>MANAJEMEN PRODUKSI</span></div></div>
+    <a href="#" class="brand" onclick="go('dashboard'); return false;" style="text-decoration:none; cursor:pointer;">
+    <div class="mark">RJ</div>
+    <div><b>${esc(S.settings.name||"Rofi Jaya")}</b><span>MANAJEMEN PRODUKSI</span></div>
+  </a>
   <nav class="nav" aria-label="Navigasi utama">${items.map(([id,label,count])=>`
    <button data-nav="${id}" class="${activeView===id?"active":""}">${esc(label)}${
     count?`<span class="count">${count}</span>`:""}</button>`).join("")}</nav>
@@ -708,7 +710,7 @@ function renderDetail(c){
  c.innerHTML=`<div class="head"><div><div class="eyebrow">${esc(o.number)} · ${esc(o.life==="active"?"AKTIF":(o.final_label||o.life).toUpperCase())}</div>
   <h1>${esc(o.customer)}</h1>
   <p>${esc(o.company||"Konsumen perorangan")} · ${o.qty} pcs · ${esc(o.items.map(i=>i.garment).join(", "))}</p></div>
-  <div class="row"><button id="back">← Daftar</button>
+  <div class="row"><button id="back">← Kembali</button>
    <button class="wa" id="wa">Bagikan WhatsApp</button>
    <a class="button" href="/nota/${esc(o.tracking_token)}" target="_blank" rel="noopener">Nota digital ↗</a></div></div>
  <div class="row" style="margin-bottom:16px">${prodBadge(o)}${payBadge(o)}
