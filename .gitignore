@@ -23,3 +23,6 @@ Thumbs.db
 
 # File Backup
 backup-rofi-jaya-*.json
+
+node_modules/
+*.zip
