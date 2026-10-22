@@ -63,10 +63,10 @@ label{display:block;font-size:12px;font-weight:650;color:var(--muted);margin-bot
 .shell{display:grid;grid-template-columns:236px 1fr;min-height:100vh}
 .side{background:var(--surface);border-right:1px solid var(--line);padding:22px 14px;
  display:flex;flex-direction:column;position:sticky;top:0;height:100vh}
-.brand{display:flex;gap:11px;align-items:center;padding:0 8px 22px}
+.brand{display:flex;gap:11px;align-items:center;padding:0 8px 22px;text-decoration:none}
 .mark{width:38px;height:38px;border-radius:10px;background:var(--accent);color:var(--accent-ink);
  display:grid;place-items:center;font-weight:900;letter-spacing:-1px;flex:none}
-.brand b{display:block;font-size:15.5px;letter-spacing:.02em}
+.brand b{display:block;font-size:15.5px;letter-spacing:.02em;color:var(--text)}
 .brand span{font-size:10px;letter-spacing:.14em;color:var(--muted)}
 .nav{display:flex;flex-direction:column;gap:3px}
 .nav button{background:none;border:0;justify-content:flex-start;padding:10px 12px;
@@ -196,25 +196,43 @@ details{margin-top:6px}summary{cursor:pointer;color:var(--muted);font-size:12px}
 pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#171B18;border:1px solid var(--line);
  padding:10px;border-radius:8px;font-size:11px;font-family:var(--mono);max-height:240px;overflow:auto}
 .print-only{display:none}
-@media(max-width:1180px){.g4{grid-template-columns:repeat(2,1fr)}
- .filters{grid-template-columns:1fr 1fr}}
-@media(max-width:860px){
- .shell{grid-template-columns:1fr}
- .side{position:fixed;inset:0 auto 0 0;width:250px;z-index:60;transform:translateX(-100%);
-  transition:transform .16s ease;height:100dvh}
- .side.open{transform:none;box-shadow:0 0 0 100vw #000A}
- .menu-btn{display:inline-flex}
- .top{padding:0 14px;height:58px}
- .content{padding:18px 14px 50px}
- .form,.g2,.g3,.hero-mini{grid-template-columns:1fr}
- .tl{grid-template-columns:1fr 1fr}
- .kv{grid-template-columns:130px 1fr}
- h1{font-size:21px}
- .filters{grid-template-columns:1fr 1fr}
- .filters .wide{grid-column:1/-1}
- .head{align-items:flex-start}
+
+/* ---------- MENU BUTTON STYLE ---------- */
+.menu-btn {
+    display: none; /* Default sembunyi di desktop */
 }
-.menu-btn{display:none}
+@media(max-width:1180px){
+    .g4{grid-template-columns:repeat(2,1fr)}
+    .filters{grid-template-columns:1fr 1fr}
+}
+@media(max-width:860px){
+    .shell{grid-template-columns:1fr}
+    .side{position:fixed;inset:0 auto 0 0;width:250px;z-index:60;transform:translateX(-100%);
+     transition:transform .16s ease;height:100dvh}
+    .side.open{transform:none;box-shadow:0 0 0 100vw #000A}
+    
+    /* Tampilkan tombol menu di HP dengan gaya yang jelas */
+    .menu-btn {
+        display: inline-flex !important; 
+        background: #2E352F; 
+        color: #fff; 
+        border: 1px solid #465046;
+        padding: 8px 12px;
+        border-radius: 8px;
+        font-weight: bold;
+        cursor: pointer;
+    }
+    
+    .top{padding:0 14px;height:58px}
+    .content{padding:18px 14px 50px}
+    .form,.g2,.g3,.hero-mini{grid-template-columns:1fr}
+    .tl{grid-template-columns:1fr 1fr}
+    .kv{grid-template-columns:130px 1fr}
+    h1{font-size:21px}
+    .filters{grid-template-columns:1fr 1fr}
+    .filters .wide{grid-column:1/-1}
+    .head{align-items:flex-start}
+}
 @media print{
  body{background:#fff;color:#111}
  .shell,.side,.top,.tabs,#toast,dialog{display:none!important}
@@ -382,14 +400,16 @@ function render(){
     count?`<span class="count">${count}</span>`:""}</button>`).join("")}</nav>
   <div class="side-foot">
    <span class="badge ${navigator.onLine?"ok":"bad"}" id="conn">${
-    navigator.onLine?"● Server tersambung":"● Offline"}</span>
+    navigator.online?"● Server tersambung":"● Offline"}</span>
    <button class="small" id="logout">Keluar</button>
   </div>
  </aside>
  <div class="main">
   <header class="top">
-   <div class="row"><button class="small menu-btn" id="menu" aria-label="Menu">☰ Menu</button>
-    <span class="muted tiny">${fmtDate(S.today)}</span></div>
+   <div class="row" style="display:flex; align-items:center; gap:10px;">
+    <button class="small menu-btn" id="menu" aria-label="Menu">☰ Menu</button>
+    <span class="muted tiny">${fmtDate(S.today)}</span>
+   </div>
    <div class="row">
     <a class="button small" href="/" target="_blank" rel="noopener">Lihat situs publik ↗</a>
     <button class="small" id="reload">↻ Muat ulang</button>
