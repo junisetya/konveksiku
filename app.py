@@ -2033,7 +2033,8 @@ def healthz():
 # (v1) sengaja tidak dipakai lagi agar dashboard tidak tampil ganda.
 
 sys.path.insert(0, str(ROOT / "tools"))
-import migrate_v2 as _mig  # noqa: E402  (skema & backfill v2)
+sys.path.insert(0, str(ROOT))
+import migrate_v2 as _mig
 
 # app.py bisa berjalan sebagai __main__ (python app.py) sekaligus diimpor
 # modul lain. Daftarkan modul ini dengan nama "app" supaya `from app import
