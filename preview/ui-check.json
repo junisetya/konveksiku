@@ -1,0 +1,18 @@
+{
+  "stats": [
+    "1",
+    "0",
+    "1",
+    "0",
+    "0",
+    "0",
+    "1"
+  ],
+  "rows": 1,
+  "detail": "Pak Sigit",
+  "overflowDesktop": 0,
+  "overflowMobile": 0,
+  "errors": [
+    "console: Failed to load resource: the server responded with a status of 401 (UNAUTHORIZED)"
+  ]
+}

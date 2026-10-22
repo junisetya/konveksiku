@@ -1,0 +1,38 @@
+app = "rofi-jaya"
+primary_region = "sin"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "8080"
+  HOST = "0.0.0.0"
+  # Nilai di bawah dibiarkan kosong; isi lewat `fly secrets set`.
+  # DATABASE_URL = ""
+  # SECRET_KEY = ""
+  # OWNER_PASSWORD = ""
+  # APP_ORIGIN = "https://rofi-jaya.fly.dev"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "suspend"
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [http_service.http_options.response.headers]
+    X-Content-Type-Options = "nosniff"
+    X-Frame-Options = "DENY"
+    Referrer-Policy = "same-origin"
+
+[checks]
+  [checks.healthz]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "20s"
+    method = "GET"
+    path = "/api/healthz"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

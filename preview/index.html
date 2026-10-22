@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Rofi Jaya — Laporan Perbaikan &amp; Pratinjau (Supabase)</title>
+<style>
+:root{--bg:#101211;--card:#202522;--line:#343B36;--text:#F1F2ED;--muted:#B0B8B0;--accent:#B5C7A8;--bad:#D9756A;--ok:#B5C7A8;--warn:#E0A458}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.6 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+.w{max-width:1080px;margin:0 auto;padding:0 20px}
+header{padding:24px 0 18px;border-bottom:1px solid var(--line);background:#171A19}
+h1{font-size:23px;letter-spacing:-.5px;margin:0 0 6px}
+h2{font-size:17px;margin:26px 0 10px}
+p{margin:0 0 10px;color:var(--muted);font-size:14px}
+.badge{display:inline-block;padding:3px 10px;border-radius:99px;font-size:11.5px;border:1px solid #3D5443;background:#233026;color:#C7DDBB;font-weight:600}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:13px;padding:16px}
+.card h3{margin:0 0 8px;font-size:14px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em}
+ul{margin:0;padding-left:18px;font-size:13.5px}
+li{margin-bottom:6px}
+code{background:#1B201D;border:1px solid var(--line);padding:1px 6px;border-radius:6px;font-size:12px}
+.tabs{display:flex;gap:8px;flex-wrap:wrap;margin:16px 0 12px}
+.tabs button{background:#262C28;border:1px solid var(--line);color:var(--text);padding:8px 14px;border-radius:9px;cursor:pointer;font-weight:600;font-size:13px}
+.tabs button.active{background:var(--accent);color:#12160F;border-color:var(--accent)}
+img{width:100%;border:1px solid var(--line);border-radius:12px;display:block;background:#0c0e0d}
+.shots{display:grid;grid-template-columns:1fr;gap:14px}
+.muted{color:var(--muted);font-size:12.5px}
+@media(max-width:760px){.grid{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<header><div class="w">
+<h1>Rofi Jaya — tersambung ke Supabase</h1>
+<p>Tangkapan layar diambil dari Chrome sungguhan terhadap aplikasi yang berjalan
+(<code>http://127.0.0.1:8099</code>) dengan data asli dari project Supabase Anda.</p>
+<span class="badge">PostgreSQL 17.11 · pooler ap-northeast-1 · 8/8 tabel v2</span>
+</div></header>
+<main class="w">
+<h2>Yang diperbaiki sesi ini</h2>
+<div class="grid">
+ <div class="card"><h3>Ditemukan lewat uji browser</h3><ul>
+  <li><b>DDL gagal di PostgreSQL</b> — <code>psycopg2</code> tidak punya <code>executescript()</code>; skema tidak pernah terbentuk di Supabase.</li>
+  <li><b>Mode SQLite rusak</b> — pembungkus cursor membuat deteksi database salah; perbaikan tadi harus dibatasi ke Postgres.</li>
+  <li><b>Pesanan lama tanpa kolom <code>target</code></b> memicu <code>KeyError</code> saat dashboard memuat.</li>
+  <li><b>Angka kartu menempel</b> ke labelnya (CSS inline).</li>
+  <li><b>Toast "Silakan masuk sebagai owner"</b> muncul padahal itu kondisi normal sebelum login.</li>
+  <li><b>404 <code>/favicon.ico</code></b> mengotori console.</li>
+  <li><code>setup_supabase.py</code> gagal menjalankan uji di Windows (<code>os.system</code> → <code>subprocess</code>).</li>
+ </ul></div>
+ <div class="card"><h3>Hasil uji</h3><ul>
+  <li>Koneksi Supabase: <b>OK</b>, 8/8 tabel v2.</li>
+  <li>Login owner lewat API: <b>HTTP 200</b>.</li>
+  <li>Uji alur end-to-end (SQLite terpisah): <b>semua lolos</b>.</li>
+  <li>Browser: login → dashboard → detail → tab produksi jalan.</li>
+  <li>Overflow horizontal desktop &amp; mobile: <b>0 px</b>.</li>
+  <li>Console tersisa: 1× 401 dari <code>/api/v2/state</code> sebelum login (normal).</li>
+ </ul></div>
+</div>
+<h2>Pratinjau aplikasi</h2>
+<div class="tabs">
+ <button data-img="ui-dashboard.png" class="active">Dashboard</button>
+ <button data-img="ui-detail.png">Detail pesanan</button>
+ <button data-img="ui-produksi.png">Tahapan produksi</button>
+ <button data-img="ui-mobile.png">Mobile 390px</button>
+ <button data-img="ui-login.png">Halaman masuk</button>
+</div>
+<div class="shots"><img id="shot" src="ui-dashboard.png" alt="Tangkapan layar aplikasi"></div>
+<p class="muted" style="margin-top:12px">Jalankan aplikasi: <code>python app.py</code> → buka
+<code>http://127.0.0.1:8099</code>. Periksa koneksi database: <code>python tools/check_supabase.py</code>.</p>
+</main>
+<script>
+document.querySelectorAll(".tabs button").forEach(b=>b.onclick=()=>{
+  document.querySelectorAll(".tabs button").forEach(x=>x.classList.remove("active"));
+  b.classList.add("active");
+  document.getElementById("shot").src=b.dataset.img;
+});
+</script>
+</body>
+</html>
