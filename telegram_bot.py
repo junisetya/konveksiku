@@ -29,6 +29,7 @@ from rofi_api_v2 import (
     _create_order_internal,
     _stage_action_internal,
     _upload_photo_internal,
+    _checklist_toggle_internal,
     order_urls,
     STAGE_KEYS,
     STAGE_LABELS,
@@ -150,6 +151,36 @@ def _recent_orders(limit=MAX_ORDERS_MENU):
             "SELECT number FROM orders ORDER BY number DESC LIMIT "
             + str(int(limit))).fetchall()
     return [r["number"] for r in rows]
+
+
+def _checklist_items(order_id):
+    with connect() as c:
+        rows = c.execute(
+            "SELECT id, label, done FROM production_checklist_items "
+            "WHERE order_id=%s ORDER BY position", (order_id,)
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _checklist_keyboard(items):
+    rows = []
+    for it in items:
+        mark = "☑️" if it["done"] else "⬜️"
+        rows.append([{"text": f"{mark} {it['label']}",
+                     "callback_data": "cl_toggle_" + it["id"]}])
+    rows.append([{"text": "✅ Selesaikan Finishing", "callback_data": "cl_finish"}])
+    rows.append([{"text": "🏠 Menu", "callback_data": "menu"}])
+    return rows
+
+
+def _start_checklist(chat_id, number):
+    order = _order_by_number(number)
+    if not order:
+        return f"❌ Pesanan {number} tidak ditemukan.", _menu_kb()
+    _set_state(chat_id, "checklist",
+               {"number": number, "order_id": order["id"]})
+    items = _checklist_items(order["id"])
+    return "✅ Finishing — centang checklist:", _checklist_keyboard(items)
 
 
 # ---------------------------------------------------------------------------
@@ -541,10 +572,39 @@ def _handle_callback(chat_id, data):
                            {"number": number, "stage": stage})
                 return ("📝 Ketik catatan untuk tahap "
                         + _stage_label(stage) + ":", None)
+            if act == "selesai" and stage == "finishing":
+                return _start_checklist(chat_id, number)
             return execute_stage(chat_id, number, act, stage)
         _set_state(chat_id, "foto_wait",
                    {"number": number, "stage": meta.get("stage")})
         return "📷 Kirim foto sekarang (maks 5MB):", None
+
+    if data.startswith("cl_toggle_"):
+        item = data[len("cl_toggle_"):]
+        if not st or st.get("flow") != "checklist":
+            return "Sesi checklist kedaluwarsa.", _menu_kb()
+        order_id = st["data"].get("order_id")
+        try:
+            with connect() as c:
+                _checklist_toggle_internal(c, order_id, item)
+        except ValidationError as e:
+            return f"❌ {e}", _menu_kb()
+        items = _checklist_items(order_id)
+        return "Checklist finishing diperbarui:", _checklist_keyboard(items)
+
+    if data == "cl_finish":
+        if not st or st.get("flow") != "checklist":
+            return "Sesi checklist kedaluwarsa.", _menu_kb()
+        order_id = st["data"].get("order_id")
+        items = _checklist_items(order_id)
+        pending = [it["label"] for it in items if not it["done"]]
+        if pending:
+            return ("❌ Checklist belum lengkap: " + "; ".join(pending),
+                    _checklist_keyboard(items))
+        text, kb = execute_stage(chat_id, st["data"].get("number", ""),
+                                 "selesai", "finishing")
+        _clear_state(chat_id)
+        return text, kb
 
     return "Tombol tidak dikenal.", _menu_kb()
 
@@ -610,6 +670,8 @@ def handle_update(update):
                 _set_state(chat_id, "tahap_catatan",
                            {"number": text.strip(), "stage": stage})
                 return [(chat_id, "Ketik catatan:", None)]
+            if act == "selesai" and stage == "finishing":
+                return [(chat_id, *_start_checklist(chat_id, text.strip()))]
             return [(chat_id, *execute_stage(chat_id, text, act, stage))]
         _set_state(chat_id, "foto_wait",
                    {"number": text.strip(), "stage": meta.get("stage")})

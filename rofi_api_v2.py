@@ -1065,34 +1065,40 @@ def v2_stage(ident):
     return jsonify(ok=True)
 
 
+def _checklist_toggle_internal(c, ident, item):
+    """Toggle satu item checklist (dipakai route & bot). Kembalikan (done, finished, total)."""
+    o = load_order(c, ident)
+    require(o is not None, "Pesanan tidak ditemukan.")
+    require(o["life"] == "active", "Pesanan tidak sedang aktif.")
+    row = c.execute(
+        "SELECT * FROM production_checklist_items WHERE order_id=%s AND id=%s",
+        (ident, item)
+    ).fetchone()
+    require(row is not None, "Item checklist tidak ditemukan.")
+    done = 0 if row["done"] else 1
+    c.execute(
+        "UPDATE production_checklist_items SET done=%s, done_at=%s WHERE id=%s",
+        (done, now() if done else "", item)
+    )
+    total = c.execute(
+        "SELECT COUNT(*) AS n FROM production_checklist_items WHERE order_id=%s",
+        (ident,)
+    ).fetchone()["n"]
+    finished = c.execute(
+        "SELECT COUNT(*) AS n FROM production_checklist_items "
+        "WHERE order_id=%s AND done=1", (ident,)
+    ).fetchone()["n"]
+    _bump(c, ident)
+    return done, finished, total
+
+
 @app.post("/api/v2/orders/<ident>/checklist")
 @authenticated
 def v2_checklist(ident):
     d = request.get_json() or {}
     item = text(d.get("item", ""), 40)
     with connect() as c:
-        o = load_order(c, ident)
-        require(o is not None, "Pesanan tidak ditemukan.")
-        require(o["life"] == "active", "Pesanan tidak sedang aktif.")
-        row = c.execute(
-            "SELECT * FROM production_checklist_items WHERE order_id=%s AND id=%s",
-            (ident, item)
-        ).fetchone()
-        require(row is not None, "Item checklist tidak ditemukan.")
-        done = 0 if row["done"] else 1
-        c.execute(
-            "UPDATE production_checklist_items SET done=%s, done_at=%s WHERE id=%s",
-            (done, now() if done else "", item)
-        )
-        total = c.execute(
-            "SELECT COUNT(*) AS n FROM production_checklist_items WHERE order_id=%s",
-            (ident,)
-        ).fetchone()["n"]
-        finished = c.execute(
-            "SELECT COUNT(*) AS n FROM production_checklist_items "
-            "WHERE order_id=%s AND done=1", (ident,)
-        ).fetchone()["n"]
-        _bump(c, ident)
+        done, finished, total = _checklist_toggle_internal(c, ident, item)
     return jsonify(ok=True, done=finished, total=total)
 
 
