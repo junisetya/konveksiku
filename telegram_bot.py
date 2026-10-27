@@ -1,14 +1,14 @@
 # -*- coding: utf-8 -*-
-"""Bot Telegram (wizard) untuk Rofi Konveksi.
+"""Bot Telegram (menu tombol) untuk Rofi Konveksi.
 
-Modul ini TIDAK mengubah perilaku API yang ada; ia memakai fungsi internal
-dari `rofi_api_v2` untuk membuat pesanan, memperbarui tahap, dan upload foto
-ke ImageKit. Route webhook didaftarkan lewat `setup(app)`.
+Desain:
+- Semua perintah memakai TOMBOL inline (bukan ketik /...).
+- Nota: cukup 1 baris isian, lalu ada tombol Cek Ulang / Kirim / Batal.
+- Tahap & Foto: pemilihan via tombol; hanya data isian (catatan/foto/
+  nomor pesanan manual) yang diketik.
 
-Keamanan:
-- Hanya `chat_id` dalam TELEGRAM_ALLOWED_IDS yang dilayani.
-- Opsional header `X-Telegram-Bot-Api-Secret-Token` dicocokkan dengan
-  TELEGRAM_WEBHOOK_SECRET (diset saat setWebhook).
+Modul memakai fungsi internal rofi_api_v2 (buat pesanan, tahap, upload
+ImageKit). Webhook didaftarkan lewat setup(app).
 """
 import base64
 import json
@@ -18,6 +18,7 @@ import time
 import urllib.error
 import urllib.request
 from datetime import date as _date_today
+from datetime import timedelta as _timedelta
 
 from app import (
     connect, settings, normalize_wa, format_rupiah,
@@ -45,7 +46,8 @@ API_BASE = _env("TELEGRAM_API_BASE", "https://api.telegram.org")
 ALLOWED = {x.strip() for x in _env("TELEGRAM_ALLOWED_IDS").split(",") if x.strip()}
 WEBHOOK_SECRET = _env("TELEGRAM_WEBHOOK_SECRET")
 
-WIZARD_TTL = 60 * 15  # 15 menit
+WIZARD_TTL = 60 * 30  # 30 menit
+MAX_ORDERS_MENU = 8
 
 
 def _telegram(method, payload=None):
@@ -73,18 +75,6 @@ def send_message(chat_id, text, keyboard=None):
     _telegram("sendMessage", payload)
 
 
-def main_menu_keyboard():
-    """Tombol menu utama (pengganti perintah /...)."""
-    return [
-        [{"text": "📝 Nota", "callback_data": "nota"},
-         {"text": "🔄 Tahap", "callback_data": "tahap"}],
-        [{"text": "📷 Foto", "callback_data": "foto"},
-         {"text": "ℹ️ Status", "callback_data": "status"}],
-        [{"text": "❓ Bantuan", "callback_data": "bantuan"},
-         {"text": "🚫 Batal", "callback_data": "batal"}],
-    ]
-
-
 def _order_by_number(number):
     with connect() as c:
         row = c.execute(
@@ -99,32 +89,89 @@ def _stage_label(key):
 
 
 # ---------------------------------------------------------------------------
-# State wizard (dalam memori, ber-TTL)
+# Keyboard (tombol)
+# ---------------------------------------------------------------------------
+
+def main_menu_keyboard():
+    return [
+        [{"text": "📝 Nota", "callback_data": "nota"},
+         {"text": "🔄 Tahap", "callback_data": "tahap"}],
+        [{"text": "📷 Foto", "callback_data": "foto"},
+         {"text": "ℹ️ Status", "callback_data": "status"}],
+        [{"text": "❓ Bantuan", "callback_data": "bantuan"},
+         {"text": "🚫 Batal", "callback_data": "batal"}],
+    ]
+
+
+def _tahap_act_keyboard():
+    return [
+        [{"text": "▶️ Mulai", "callback_data": "tahap_mulai"},
+         {"text": "✅ Selesai", "callback_data": "tahap_selesai"}],
+        [{"text": "📝 Catatan", "callback_data": "tahap_catatan"},
+         {"text": "↩️ Ulang", "callback_data": "tahap_ulang"}],
+        [{"text": "🏠 Menu", "callback_data": "menu"}],
+    ]
+
+
+def _stage_keyboard(prefix, extra_back="tahap"):
+    rows = [
+        [{"text": "✂️ Potong", "callback_data": prefix + "_potong"},
+         {"text": "🧵 Jahit", "callback_data": prefix + "_jahit"}],
+        [{"text": "🎨 Finishing", "callback_data": prefix + "_finishing"},
+         {"text": "📦 Serah", "callback_data": prefix + "_serah"}],
+    ]
+    if prefix == "foto":
+        rows.append([{"text": "🟰 Umum", "callback_data": "foto_umum"}])
+    rows.append([{"text": "↩️ Kembali", "callback_data": extra_back}])
+    return rows
+
+
+def _orders_keyboard(orders, back="menu"):
+    rows = []
+    for i in range(0, len(orders), 2):
+        row = [{"text": o, "callback_data": "order_" + o} for o in orders[i:i + 2]]
+        rows.append(row)
+    rows.append([{"text": "⌨️ Ketik nomor", "callback_data": "order_manual"}])
+    rows.append([{"text": "↩️ Kembali", "callback_data": back}])
+    return rows
+
+
+def _nota_confirm_keyboard():
+    return [
+        [{"text": "✅ Kirim Nota", "callback_data": "kirim_nota"}],
+        [{"text": "✏️ Perbaiki", "callback_data": "perbaiki_nota"},
+         {"text": "🚫 Batal", "callback_data": "batal"}],
+    ]
+
+
+def _recent_orders(limit=MAX_ORDERS_MENU):
+    with connect() as c:
+        rows = c.execute(
+            "SELECT number FROM orders ORDER BY number DESC LIMIT "
+            + str(int(limit))).fetchall()
+    return [r["number"] for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# State wizard (memori, TTL)
 # ---------------------------------------------------------------------------
 
 WIZARD = {}
-
-
-def _now():
-    return time.time()
 
 
 def _state(chat_id):
     st = WIZARD.get(chat_id)
     if not st:
         return None
-    if st.get("expires", 0) < _now():
+    if st.get("expires", 0) < time.time():
         WIZARD.pop(chat_id, None)
         return None
     return st
 
 
-def _set_state(chat_id, flow, step=0, data=None, items=None, cur=None,
-               waiting=None):
+def _set_state(chat_id, flow, data=None):
     WIZARD[chat_id] = {
-        "flow": flow, "step": step, "data": data or {},
-        "items": items or [], "cur": cur or {}, "waiting": waiting,
-        "expires": _now() + WIZARD_TTL,
+        "flow": flow, "data": data or {}, "expires": time.time() + WIZARD_TTL,
     }
 
 
@@ -133,34 +180,23 @@ def _clear_state(chat_id):
 
 
 # ---------------------------------------------------------------------------
-# Wizard buat nota
+# Nota — satu baris isian + konfirmasi tombol
 # ---------------------------------------------------------------------------
 
-NOTA_PROMPTS = {
-    "customer": "1/19 · Siapa nama konsumen?",
-    "wa": "2/19 · Nomor WhatsApp konsumen? (mis. 081234567890)",
-    "company": "3/19 · Instansi/perusahaan? (ketik - jika kosong)",
-    "address": "4/19 · Alamat / catatan pengiriman? (-)",
-    "item_garment": "5/19 · Model pakaian item ke-{n}?",
-    "item_qty": "6/19 · Jumlah pcs untuk item ke-{n}?",
-    "item_price": "7/19 · Harga per pcs (Rp)?",
-    "item_sizes": "8/19 · Ukuran (format M=4, L=6) atau - ?",
-    "item_material": "9/19 · Bahan? (-)",
-    "item_color": "10/19 · Warna? (-)",
-    "item_design": "11/19 · Spesifikasi/desain? (-)",
-    "more_items": "12/19 · Tambah item lagi? (ya/tidak)",
-    "dp": "13/19 · DP diterima (Rp)? (0 jika belum)",
-    "dp_method": "14/19 · Metode DP? (default Tunai)",
-    "deal": "15/19 · Tanggal kesepakatan? (default hari ini)",
-    "target": "16/19 · Estimasi selesai (YYYY-MM-DD)?",
-    "target_payment": "17/19 · Target pelunasan? (-)",
-    "agreement_note": "18/19 · Catatan kesepakatan (tampil di nota)? (-)",
-    "confirm": "19/19 · Konfirmasi (ya / ulangi / batal)",
-}
+NOTA_HELP = (
+    "📝 KIRIM 1 PESAN berisi data nota, format:\n"
+    "nama=…; wa=…; model=…; harga=…; ukuran=M=4,L=6; dp=…\n\n"
+    "Contoh:\n"
+    "nama=Budi Santoso; wa=081234567890; model=Batik; "
+    "ukuran=M=4,L=6; harga=175000; dp=300000\n\n"
+    "Opsional: company=…; alamat=…; bahan=…; warna=…; desain=…; "
+    "qty=…; target=YYYY-MM-DD; metode=…\n"
+    "Kalau tanpa ukuran, isi qty=… (default 1)."
+)
 
 
 def _parse_sizes(raw):
-    """'M=4,L=6' -> [{'label':'M','qty':4}, ...]; '-' -> []."""
+    """'M=4,L=6' -> [{'label':'M','qty':4}, ...]; kosong -> []."""
     if raw.strip() in ("", "-"):
         return []
     out = []
@@ -175,64 +211,131 @@ def _parse_sizes(raw):
     return out
 
 
-def _date_or_today(raw):
-    raw = raw.strip()
-    if raw in ("", "-"):
-        raw = _date_today.today().isoformat()
-    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw):
-        raise ValidationError("Tanggal harus berformat YYYY-MM-DD")
-    return raw
+def parse_nota_line(text):
+    text = text.strip()
+    if text.lower().startswith("/nota"):
+        text = text[len("/nota"):].strip()
+    if not text:
+        raise ValidationError("Isian nota kosong.")
+    raw = {}
+    for part in text.split(";"):
+        part = part.strip()
+        if not part:
+            continue
+        if "=" in part:
+            k, v = part.split("=", 1)
+            raw[k.strip().lower()] = v.strip()
+        else:
+            raise ValidationError(
+                f"Bagian '{part}' harus berbentuk kunci=nilai (mis. nama=Budi).")
 
+    missing = []
+    for k, label in (("nama", "nama"), ("wa", "wa"), ("model", "model"),
+                     ("harga", "harga")):
+        if not raw.get(k):
+            missing.append(label)
+    if missing:
+        raise ValidationError("Kurang: " + ", ".join(missing) + ".")
 
-def _nota_prompt(key, item_number=1):
-    tpl = NOTA_PROMPTS.get(key, "")
-    return tpl.format(n=item_number) if "{n}" in tpl else tpl
+    customer = raw["nama"]
+    wa = normalize_wa(raw["wa"])
+    garment = raw["model"]
+    price = int(raw["harga"])
+    sizes = _parse_sizes(raw.get("ukuran", "") or raw.get("sizes", ""))
+    qty = int(raw.get("qty") or 0)
+    total_sizes = sum(s["qty"] for s in sizes)
+    if sizes and not qty:
+        qty = total_sizes
+    if not qty:
+        qty = 1
+    if sizes and total_sizes != qty:
+        raise ValidationError(
+            f"Total ukuran ({total_sizes}) tidak sama dengan qty ({qty}).")
+    if qty > 1000000 or price > 10**11:
+        raise ValidationError("Nilai qty/harga di luar batas.")
 
-
-def _confirm_nota(chat_id, data, items):
-    payload = {
-        "customer": data.get("customer", ""),
-        "wa": data.get("wa", ""),
-        "company": data.get("company", ""),
-        "address": data.get("address", ""),
-        "deal": data.get("deal", ""),
-        "target": data.get("target", ""),
-        "target_payment": data.get("target_payment", ""),
-        "work_start": "",
-        "customer_note": "",
-        "agreement_note": data.get("agreement_note", ""),
-        "dp": int(data.get("dp") or 0),
-        "dp_method": data.get("dp_method", "Tunai"),
-        "dp_date": data.get("deal", ""),
-        "dp_note": "",
-        "discount": 0,
-        "extra": 0,
-        "items": items,
+    today = _date_today.today()
+    deal = raw.get("deal") or today.isoformat()
+    target = raw.get("target") or (today + _timedelta(days=14)).isoformat()
+    dp = int(raw.get("dp") or 0)
+    return {
+        "customer": customer, "wa": wa,
+        "company": raw.get("company", ""),
+        "address": raw.get("alamat", ""),
+        "garment": garment, "qty": qty, "price": price, "sizes": sizes,
+        "material": raw.get("bahan", ""),
+        "color": raw.get("warna", ""),
+        "design": raw.get("desain", ""),
+        "deal": deal, "target": target,
+        "target_payment": raw.get("targetpembayaran", ""),
+        "dp": dp, "dp_method": raw.get("metode", "Tunai"),
+        "agreement_note": raw.get("catatan", ""),
     }
-    try:
-        valid = _validate_order_payload(payload)
-    except ValidationError as e:
-        _clear_state(chat_id)
-        return f"❌ Data tidak valid: {e}\nKetik /nota untuk mengulang."
 
+
+def _draft_payload(d):
+    return {
+        "customer": d["customer"], "wa": d["wa"],
+        "company": d["company"], "address": d["address"],
+        "deal": d["deal"], "target": d["target"],
+        "target_payment": d["target_payment"],
+        "work_start": "", "customer_note": "",
+        "agreement_note": d["agreement_note"],
+        "dp": d["dp"], "dp_method": d["dp_method"],
+        "dp_date": d["deal"], "dp_note": "",
+        "discount": 0, "extra": 0,
+        "items": [{
+            "garment": d["garment"], "name": d["garment"],
+            "qty": d["qty"], "price": d["price"],
+            "sizes": d["sizes"], "material": d["material"],
+            "color": d["color"], "design": d["design"],
+            "printing": "", "note": "",
+        }],
+    }
+
+
+def _nota_summary(d):
+    total = d["price"] * d["qty"]
+    dp = d["dp"]
+    sizes = ", ".join(f"{s['label']}={s['qty']}" for s in d["sizes"]) or "—"
+    lines = [
+        "📋 CEK ULANG NOTA:",
+        f"• Konsumen: {d['customer']}",
+        f"• WA: {d['wa']}",
+        f"• Model: {d['garment']} ({d['qty']} pcs)",
+        f"• Ukuran: {sizes}",
+        f"• Harga/pcs: {format_rupiah(d['price'])}",
+        f"• Total: {format_rupiah(total)}",
+        f"• DP: {format_rupiah(dp)} · Sisa: {format_rupiah(total - dp)}",
+        f"• Deal: {d['deal']} · Target: {d['target']}",
+    ]
+    if d.get("company"):
+        lines.append(f"• Instansi: {d['company']}")
+    if d.get("address"):
+        lines.append(f"• Alamat: {d['address']}")
+    return "\n".join(lines)
+
+
+def _confirm_nota_draft(chat_id, d):
+    try:
+        valid = _validate_order_payload(_draft_payload(d))
+    except ValidationError as e:
+        return f"❌ Data tidak valid: {e}", _nota_confirm_keyboard()
     with connect() as c:
         s = settings(c)
         ident, number, token = _create_order_internal(c, valid)
     urls = order_urls(ident, number, token)
     usaha = s.get("name") or "Rofi Jaya"
-    total = valid["total"]
-    remaining = total - valid["dp"]
     msg = (
         f"Halo {valid['customer']}, berikut Nota Pesanan dari {usaha}.\n\n"
         f"Nomor Nota: {number}\n"
-        f"Total Pesanan: {format_rupiah(total)}\n"
-        f"Sisa Pembayaran: {format_rupiah(remaining)}\n"
+        f"Total Pesanan: {format_rupiah(valid['total'])}\n"
+        f"Sisa Pembayaran: {format_rupiah(valid['total'] - valid['dp'])}\n"
         f"Estimasi Selesai: {valid['target']}\n\n"
         f"Nota digital:\n{urls['nota']}\n\n"
         "Terima kasih."
     )
     ok, pesan = fonnte_send(valid["wa"], msg)
-    _clear_state(chat_id)
     wa_line = (f"✅ WhatsApp terkirim ke {valid['wa']}."
                if ok else f"⚠️ WhatsApp GAGAL: {pesan}")
     return (
@@ -240,213 +343,78 @@ def _confirm_nota(chat_id, data, items):
         f"• Nota : {urls['nota']}\n"
         f"• Tracking : {urls['tracking']}\n"
         f"• {wa_line}"
-    )
-
-
-def _handle_nota(chat_id, text):
-    st = _state(chat_id)
-    step = st["step"]
-    data = st["data"]
-    items = st["items"]
-    cur = st["cur"]
-
-    try:
-        if step == 0:
-            if not text:
-                raise ValidationError("Nama konsumen wajib diisi.")
-            data["customer"] = text[:150]
-        elif step == 1:
-            data["wa"] = normalize_wa(text)
-        elif step == 2:
-            data["company"] = "" if text == "-" else text[:200]
-        elif step == 3:
-            data["address"] = "" if text == "-" else text[:1500]
-        elif step == 4:
-            if not text:
-                raise ValidationError("Model pakaian wajib diisi.")
-            cur["garment"] = text[:150]
-            cur["name"] = text[:150]
-        elif step == 5:
-            if not re.fullmatch(r"\d+", text):
-                raise ValidationError("Jumlah pcs harus angka.")
-            cur["qty"] = int(text)
-        elif step == 6:
-            if not re.fullmatch(r"\d+", text):
-                raise ValidationError("Harga harus angka.")
-            cur["price"] = int(text)
-        elif step == 7:
-            cur["sizes"] = _parse_sizes(text)
-        elif step == 8:
-            cur["material"] = "" if text == "-" else text[:150]
-        elif step == 9:
-            cur["color"] = "" if text == "-" else text[:100]
-        elif step == 10:
-            cur["design"] = "" if text == "-" else text[:3000]
-        elif step == 11:
-            low = text.lower()
-            if low not in ("ya", "tidak"):
-                raise ValidationError("Jawab: ya / tidak")
-            items.append(dict(cur))
-            cur.clear()
-            if low == "ya":
-                _set_state(chat_id, "nota", step=4, data=data,
-                           items=items, cur=cur)
-                return _nota_prompt("item_garment", len(items) + 1)
-        elif step == 12:
-            if not re.fullmatch(r"\d+", text):
-                raise ValidationError("DP harus angka.")
-            data["dp"] = int(text)
-        elif step == 13:
-            data["dp_method"] = "Tunai" if text == "-" else text[:60]
-        elif step == 14:
-            data["deal"] = _date_or_today(text)
-        elif step == 15:
-            t = text.strip()
-            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", t):
-                raise ValidationError("Format tanggal YYYY-MM-DD")
-            data["target"] = t
-        elif step == 16:
-            data["target_payment"] = "" if text == "-" else text.strip()
-        elif step == 17:
-            data["agreement_note"] = "" if text == "-" else text[:3000]
-        elif step == 18:
-            low = text.lower()
-            if low == "batal":
-                _clear_state(chat_id)
-                return "Wizard dibatalkan."
-            if low == "ulangi":
-                _set_state(chat_id, "nota", step=0, data={}, items=[], cur={})
-                return _nota_prompt("customer")
-            if low != "ya":
-                return "Jawab: ya / ulangi / batal"
-            return _confirm_nota(chat_id, data, items)
-    except ValidationError as e:
-        return f"❌ {e}\nCoba lagi."
-
-    st["step"] += 1
-    _set_state(chat_id, "nota", step=st["step"], data=data,
-               items=items, cur=cur)
-    n = len(items) + 1
-    keys = ["customer", "wa", "company", "address", "item_garment",
-            "item_qty", "item_price", "item_sizes", "item_material",
-            "item_color", "item_design", "more_items", "dp", "dp_method",
-            "deal", "target", "target_payment", "agreement_note", "confirm"]
-    key = keys[st["step"]] if 0 <= st["step"] < len(keys) else "confirm"
-    return _nota_prompt(key, n)
+    ), main_menu_keyboard()
 
 
 # ---------------------------------------------------------------------------
-# Update tahap
+# Tahap & Foto (pilih via tombol)
 # ---------------------------------------------------------------------------
 
-ACTION_ALIAS = {
-    "mulai": "start", "selesai": "finish",
-    "catatan": "note", "ulang": "reopen",
-}
+ACTION_LABEL = {"start": "dimulai", "finish": "diselesaikan",
+                "note": "dicatat", "reopen": "dibuka ulang"}
 
 
-def _run_stage(chat_id, action, key, note):
-    st = _state(chat_id)
-    number = (st.get("data") or {}).get("number", "")
+def execute_stage(chat_id, number, act, stage):
+    act = {"mulai": "start", "selesai": "finish",
+           "catatan": "note", "ulang": "reopen"}.get(act, act)
     order = _order_by_number(number)
     if not order:
-        _clear_state(chat_id)
-        return f"❌ Pesanan {number or ''} tidak ditemukan."
-    oid = order["id"]
-    if action == "start":
-        d = {"action": "start", "stage": key,
-             "start": _date_today.today().isoformat(), "note": note}
-    elif action == "finish":
-        d = {"action": "finish", "stage": key}
-    elif action == "note":
-        d = {"action": "note", "stage": key, "note": note}
+        return f"❌ Pesanan {number} tidak ditemukan.", _menu_kb()
+    if act == "start":
+        d = {"action": "start", "stage": stage,
+             "start": _date_today.today().isoformat(), "note": ""}
+    elif act == "finish":
+        d = {"action": "finish", "stage": stage}
+    elif act == "note":
+        d = {"action": "note", "stage": stage, "note": ""}
     else:
-        d = {"action": "reopen", "stage": key,
-             "reason": note or "Dibuka ulang lewat Telegram"}
+        d = {"action": "reopen", "stage": stage,
+             "reason": "Dibuka ulang lewat Telegram"}
     try:
         with connect() as c:
-            _stage_action_internal(c, oid, d)
+            _stage_action_internal(c, order["id"], d)
     except ValidationError as e:
-        _clear_state(chat_id)
-        return f"❌ {e}"
-    urls = order_urls(oid, order["number"], order["tracking_token"])
-    _clear_state(chat_id)
-    action_label = {"start": "dimulai", "finish": "diselesaikan",
-                    "note": "dicatat", "reopen": "dibuka ulang"}.get(action, action)
+        return f"❌ {e}", _menu_kb()
+    urls = order_urls(order["id"], order["number"], order["tracking_token"])
+    label = ACTION_LABEL.get(act, act)
     return (
-        f"✅ Tahap {_stage_label(key)} {action_label} untuk {order['number']}.\n"
+        f"✅ Tahap {_stage_label(stage)} {label} untuk {order['number']}.\n"
         f"• Tracking : {urls['tracking']}"
-    )
+    ), _menu_kb()
 
 
-def _handle_tahap(chat_id, text):
-    rest = text[len("/tahap"):].strip()
-    if not rest:
-        _set_state(chat_id, "tahap", waiting="stage_action")
-        return ("Kirim: <aksi> <kode tahap> [catatan]\n"
-                "Contoh: mulai potong dibuka hari ini\n"
-                "Aksi: mulai / selesai / catatan / ulang\n"
-                "Kode: " + ", ".join(STAGE_KEYS))
-    parts = rest.split(None, 2)
-    action = ACTION_ALIAS.get(parts[0])
-    if not action:
-        return "Aksi tidak dikenal. Gunakan: mulai / selesai / catatan / ulang"
-    if len(parts) < 2:
-        return "Format: /tahap <aksi> <kode tahap> [catatan]"
-    key = parts[1]
-    if key not in STAGE_KEYS:
-        return f"Kode tahap tidak valid. Pilih: {', '.join(STAGE_KEYS)}"
-    note = parts[2] if len(parts) > 2 else ""
-    _set_state(chat_id, "tahap", waiting="order_number",
-               data={"action": action, "key": key, "note": note})
-    return "Nomor pesanan? (contoh KVK-202610-0003)"
-
-
-# ---------------------------------------------------------------------------
-# Upload foto
-# ---------------------------------------------------------------------------
-
-def _handle_photo_file(chat_id, msg):
-    st = _state(chat_id)
-    data = st.get("data") or {}
-    order = _order_by_number(data.get("number", ""))
+def upload_photo(chat_id, msg, order_number, stage):
+    order = _order_by_number(order_number)
     if not order:
-        _clear_state(chat_id)
-        return "❌ Pesanan tidak ditemukan. Ulangi /foto"
+        return "❌ Pesanan tidak ditemukan.", _menu_kb()
     photos = msg.get("photo") or []
     if not photos:
-        return "Tidak ada foto di pesan ini. Kirim foto."
+        return "Kirim foto (format foto Telegram).", None
     file_id = photos[-1]["file_id"]
     info = _telegram("getFile", {"file_id": file_id})
     file_path = (info.get("result") or {}).get("file_path")
     if not file_path:
-        _clear_state(chat_id)
-        return "❌ Gagal mengambil file foto dari Telegram."
+        return "❌ Gagal mengambil file foto dari Telegram.", _menu_kb()
     try:
         url = f"{API_BASE}/bot{TOKEN}/{file_path}"
         with urllib.request.urlopen(url, timeout=30) as resp:
             raw = resp.read()
     except Exception as e:  # noqa: BLE001
-        _clear_state(chat_id)
-        return f"❌ Gagal mengunduh foto: {e}"
+        return f"❌ Gagal mengunduh foto: {e}", _menu_kb()
     if len(raw) > 5 * 1024 * 1024:
-        _clear_state(chat_id)
-        return "❌ Foto maksimal 5MB."
+        return "❌ Foto maksimal 5MB.", _menu_kb()
     data_uri = "data:image/jpeg;base64," + base64.b64encode(raw).decode()
-    stage = data.get("stage", "")
     caption = (msg.get("caption") or "").strip()[:200]
     try:
         url_ik = _upload_photo_internal(order["id"], stage, caption, data_uri)
     except ValidationError as e:
-        _clear_state(chat_id)
-        return f"❌ {e}"
+        return f"❌ {e}", _menu_kb()
     urls = order_urls(order["id"], order["number"], order["tracking_token"])
-    _clear_state(chat_id)
     return (
         f"✅ Foto {_stage_label(stage)} diunggah untuk {order['number']}.\n"
-        f"• Foto ImageKit : {url_ik}\n"
+        f"• Foto : {url_ik}\n"
         f"• Tracking : {urls['tracking']}"
-    )
+    ), _menu_kb()
 
 
 # ---------------------------------------------------------------------------
@@ -459,11 +427,8 @@ def _status():
     if info is None:
         lines.append(f"Fonnte: {pesan}")
     else:
-        lines.append(f"Device Fonnte: {info.get('device')} "
-                     f"({info.get('name')})")
-        lines.append("Status: "
-                     + ("terhubung" if info.get("device_status") == "connect"
-                        else "terputus"))
+        lines.append(f"Device Fonnte: {info.get('device')} ({info.get('name')})")
+        lines.append("Status: " + ("terhubung" if info.get("device_status") == "connect" else "terputus"))
         lines.append(f"Paket: {info.get('package')} · Kuota: {info.get('quota')} · "
                      f"Berlaku: {info.get('expired')}")
     with connect() as c:
@@ -473,61 +438,129 @@ def _status():
 
 
 # ---------------------------------------------------------------------------
-# Dispatcher
+# Router callback (tombol)
 # ---------------------------------------------------------------------------
+
+def _menu_kb():
+    return main_menu_keyboard()
+
 
 HELP = (
     "🤖 Rofi Konveksi — Bot Telegram\n"
-    "Gunakan tombol di bawah, atau ketik perintah /…\n"
-    "📝 Nota — wizard buat nota & kirim ke WhatsApp konsumen\n"
-    "🔄 Tahap — mulai/selesai/catatan/ulang tahap\n"
-    "📷 Foto — upload foto tahap (ImageKit) → muncul di link tracking\n"
+    "Semua aksi memakai TOMBOL di bawah, atau ketik perintah /…\n"
+    "📝 Nota — 1 baris isian + cek ulang sebelum kirim\n"
+    "🔄 Tahap — mulai/selesai/catatan/ulang via tombol\n"
+    "📷 Foto — upload foto ke ImageKit via tombol\n"
     "ℹ️ Status — status Fonnte & pesanan\n"
-    "🚫 Batal — batalkan wizard yang berjalan\n"
-    "❓ Bantuan — menu ini"
+    "🚫 Batal — batalkan proses yang berjalan"
 )
 
 
-def _handle_waiting(chat_id, text):
+def _handle_callback(chat_id, data):
     st = _state(chat_id)
-    waiting = st.get("waiting")
-    if waiting == "stage_action":
-        if text.lower() in ("batal", "/batal"):
-            _clear_state(chat_id)
-            return "Dibatalkan."
-        parts = text.split(None, 2)
-        action = ACTION_ALIAS.get(parts[0]) if parts else None
-        if not action:
-            return "Aksi tidak dikenal. Gunakan: mulai / selesai / catatan / ulang"
-        if len(parts) < 2 or parts[1] not in STAGE_KEYS:
-            return f"Kode tahap tidak valid. Pilih: {', '.join(STAGE_KEYS)}"
-        note = parts[2] if len(parts) > 2 else ""
-        _set_state(chat_id, "tahap", waiting="order_number",
-                   data={"action": action, "key": parts[1], "note": note})
-        return "Nomor pesanan? (contoh KVK-202610-0003)"
-    if waiting == "order_number":
-        st["data"]["number"] = text.strip()
-        return _run_stage(chat_id, st["data"]["action"],
-                          st["data"]["key"], st["data"].get("note", ""))
-    if waiting == "photo_stage":
-        key = text.strip()
-        if key not in STAGE_KEYS and key != "umum":
-            return "Kode tahap tidak valid. Pilih: potong/jahit/finishing/serah/umum"
-        _set_state(chat_id, "foto", waiting="photo_order",
-                   data={"stage": key})
-        return "Nomor pesanan? (contoh KVK-202610-0003)"
-    if waiting == "photo_order":
-        _set_state(chat_id, "foto", waiting="photo_file",
-                   data={"stage": st.get("data", {}).get("stage", ""),
-                         "number": text.strip()})
-        return "Kirim foto sekarang (maks 5MB)."
-    if waiting == "photo_file":
-        return "Kirim foto sekarang (maks 5MB)."
-    return "Ketik /batal untuk membatalkan."
+    if data == "menu":
+        _set_state(chat_id, "idle")
+        return "🏠 Menu utama:", _menu_kb()
+    if data == "bantuan":
+        return HELP, _menu_kb()
+    if data == "batal":
+        _clear_state(chat_id)
+        return "Wizard dibatalkan.", _menu_kb()
+    if data == "status":
+        return _status(), _menu_kb()
+    if data == "nota":
+        _set_state(chat_id, "nota_draft", {"draft": None})
+        return NOTA_HELP, None
+    if data == "tahap":
+        _set_state(chat_id, "tahap_act")
+        return "Pilih aksi tahap:", _tahap_act_keyboard()
+    if data == "foto":
+        _set_state(chat_id, "foto_stage")
+        return "Foto untuk tahap mana?", _stage_keyboard("foto")
 
+    if data.startswith("tahap_"):
+        key = data.split("_", 1)[1]
+        if key in ("mulai", "selesai", "catatan", "ulang"):
+            _set_state(chat_id, "tahap_stage", {"act": key})
+            return "Pilih tahap:", _stage_keyboard("tahap")
+        if key in STAGE_KEYS and st and st.get("flow") == "tahap_stage":
+            act = st.get("data", {}).get("act")
+            _set_state(chat_id, "order_pick",
+                       {"kind": "tahap", "act": act, "stage": key})
+            orders = _recent_orders()
+            if orders:
+                return "Pilih pesanan:", _orders_keyboard(orders)
+            return "Belum ada pesanan. Ketik nomor pesanan:", None
+
+    if data.startswith("foto_"):
+        stage = data.split("_", 1)[1]
+        if stage in STAGE_KEYS or stage == "umum":
+            _set_state(chat_id, "order_pick", {"kind": "foto", "stage": stage})
+            orders = _recent_orders()
+            if orders:
+                return "Pilih pesanan:", _orders_keyboard(orders)
+            return "Belum ada pesanan. Ketik nomor pesanan:", None
+
+    if data == "kirim_nota":
+        if (not st or st.get("flow") != "nota_draft"
+                or not st.get("data", {}).get("draft")):
+            return "Tidak ada draft nota. Klik 📝 Nota dulu.", _menu_kb()
+        text, kb = _confirm_nota_draft(chat_id, st["data"]["draft"])
+        _clear_state(chat_id)
+        return text, kb
+
+    if data == "perbaiki_nota":
+        _set_state(chat_id, "nota_draft", {"draft": None})
+        return "✏️ Kirim ulang isian nota:\n\n" + NOTA_HELP, None
+
+    if data == "order_manual":
+        if not st:
+            return "Sesi kedaluwarsa. Mulai dari menu.", _menu_kb()
+        _set_state(chat_id, "order_manual", st.get("data", {}))
+        return "Ketik nomor pesanan (contoh KVK-202610-0003):", None
+
+    if data.startswith("order_"):
+        number = data[len("order_"):]
+        meta = st.get("data", {}) if st else {}
+        kind = meta.get("kind")
+        if not kind:
+            return "Sesi kedaluwarsa. Mulai dari menu.", _menu_kb()
+        if kind == "tahap":
+            act = meta.get("act")
+            stage = meta.get("stage")
+            if act == "catatan":
+                _set_state(chat_id, "tahap_catatan",
+                           {"number": number, "stage": stage})
+                return ("📝 Ketik catatan untuk tahap "
+                        + _stage_label(stage) + ":", None)
+            return execute_stage(chat_id, number, act, stage)
+        _set_state(chat_id, "foto_wait",
+                   {"number": number, "stage": meta.get("stage")})
+        return "📷 Kirim foto sekarang (maks 5MB):", None
+
+    return "Tombol tidak dikenal.", _menu_kb()
+
+
+# ---------------------------------------------------------------------------
+# Dispatcher update (pesan & callback)
+# ---------------------------------------------------------------------------
 
 def handle_update(update):
-    msg = (update or {}).get("message")
+    out = []
+    base = update or {}
+
+    cbq = base.get("callback_query")
+    if cbq:
+        chat_id = cbq.get("message", {}).get("chat", {}).get("id")
+        if chat_id is None or str(chat_id) not in ALLOWED:
+            return []
+        _telegram("answerCallbackQuery", {"callback_query_id": cbq.get("id")})
+        res = _handle_callback(chat_id, str(cbq.get("data") or ""))
+        if res:
+            out.append((chat_id, res[0], res[1]))
+        return out
+
+    msg = base.get("message")
     if not msg:
         return []
     chat_id = msg.get("chat", {}).get("id")
@@ -536,35 +569,83 @@ def handle_update(update):
     text = (msg.get("text") or "").strip()
     st = _state(chat_id)
 
-    if st and st.get("waiting") == "photo_file" and msg.get("photo"):
-        return [(chat_id, _handle_photo_file(chat_id, msg))]
-    if text.startswith("/"):
-        pass  # perintah eksplisit menang atas state apa pun
-    elif st and st.get("waiting") and text:
-        return [(chat_id, _handle_waiting(chat_id, text))]
-    elif st and st.get("flow") == "nota":
-        return [(chat_id, _handle_nota(chat_id, text))]
+    # Input foto (flow foto_wait)
+    if st and st.get("flow") == "foto_wait" and msg.get("photo"):
+        text_r, kb = upload_photo(
+            chat_id, msg, st["data"].get("number", ""), st["data"].get("stage", ""))
+        _clear_state(chat_id)
+        return [(chat_id, text_r, kb)]
+
+    # Nota: satu baris isian
+    if st and st.get("flow") == "nota_draft" and text:
+        try:
+            draft = parse_nota_line(text)
+            _validate_order_payload(_draft_payload(draft))
+        except ValidationError as e:
+            return [(chat_id, f"❌ {e}\n\n{NOTA_HELP}", None)]
+        st["data"]["draft"] = draft
+        return [(chat_id, _nota_summary(draft), _nota_confirm_keyboard())]
+
+    # Ketik nomor pesanan manual
+    if st and st.get("flow") == "order_manual" and text:
+        meta = st.get("data", {})
+        kind = meta.get("kind")
+        if kind == "tahap":
+            act = meta.get("act")
+            stage = meta.get("stage")
+            if act == "catatan":
+                _set_state(chat_id, "tahap_catatan",
+                           {"number": text.strip(), "stage": stage})
+                return [(chat_id, "Ketik catatan:", None)]
+            return [(chat_id, *execute_stage(chat_id, text, act, stage))]
+        _set_state(chat_id, "foto_wait",
+                   {"number": text.strip(), "stage": meta.get("stage")})
+        return [(chat_id, "📷 Kirim foto sekarang (maks 5MB):", None)]
+
+    # Catatan tahap (alur tombol)
+    if st and st.get("flow") == "tahap_catatan" and text:
+        number = st["data"].get("number", "")
+        stage = st["data"].get("stage", "")
+        order = _order_by_number(number)
+        if not order:
+            _clear_state(chat_id)
+            return [(chat_id, f"❌ Pesanan {number} tidak ditemukan.", _menu_kb())]
+        try:
+            with connect() as c:
+                _stage_action_internal(c, order["id"],
+                                       {"action": "note", "stage": stage,
+                                        "note": text[:3000]})
+        except ValidationError as e:
+            _clear_state(chat_id)
+            return [(chat_id, f"❌ {e}", _menu_kb())]
+        urls = order_urls(order["id"], order["number"], order["tracking_token"])
+        _clear_state(chat_id)
+        return [(chat_id,
+                 f"✅ Catatan tahap {_stage_label(stage)} tersimpan untuk "
+                 f"{order['number']}.\n• Tracking : {urls['tracking']}",
+                 _menu_kb())]
 
     if not text:
-        return [(chat_id, "Silakan kirim perintah. /bantuan")]
+        return []
 
     low = text.lower()
     if low in ("/start", "/bantuan"):
-        return [(chat_id, HELP)]
-    if low == "/nota":
-        _set_state(chat_id, "nota", step=0)
-        return [(chat_id, _nota_prompt("customer"))]
-    if low.startswith("/tahap"):
-        return [(chat_id, _handle_tahap(chat_id, text))]
-    if low == "/foto":
-        _set_state(chat_id, "foto", waiting="photo_stage")
-        return [(chat_id, "Untuk tahap mana? (potong/jahit/finishing/serah/umum)")]
-    if low == "/status":
-        return [(chat_id, _status())]
+        return [(chat_id, HELP, _menu_kb())]
     if low == "/batal":
         _clear_state(chat_id)
-        return [(chat_id, "Wizard dibatalkan.")]
-    return [(chat_id, "Perintah tidak dikenal. /bantuan")]
+        return [(chat_id, "Wizard dibatalkan.", _menu_kb())]
+    if low == "/nota":
+        _set_state(chat_id, "nota_draft", {"draft": None})
+        return [(chat_id, NOTA_HELP, None)]
+    if low == "/tahap":
+        _set_state(chat_id, "tahap_act")
+        return [(chat_id, "Pilih aksi tahap:", _tahap_act_keyboard())]
+    if low == "/foto":
+        _set_state(chat_id, "foto_stage")
+        return [(chat_id, "Foto untuk tahap mana?", _stage_keyboard("foto"))]
+    if low == "/status":
+        return [(chat_id, _status(), _menu_kb())]
+    return [(chat_id, "Perintah tidak dikenal. Gunakan tombol.", _menu_kb())]
 
 
 # ---------------------------------------------------------------------------
@@ -581,26 +662,9 @@ def setup(app_obj):
         ):
             return "", 403
         upd = request.get_json(silent=True) or {}
-        use_menu = False
         try:
-            cbq = upd.get("callback_query")
-            if cbq:
-                use_menu = True
-                chat_id = cbq.get("message", {}).get("chat", {}).get("id")
-                data = str(cbq.get("data") or "")
-                _telegram("answerCallbackQuery", {"callback_query_id": cbq.get("id")})
-                text = data if data.startswith("/") else "/" + data
-                upd = {"message": {"chat": {"id": chat_id}, "text": text}}
-
-            for cid, txt in handle_update(upd):
-                if not txt:
-                    continue
-                if (use_menu or txt.startswith("✅") or txt.startswith("Fonnte")
-                        or txt.startswith("Device") or txt.startswith("🤖")
-                        or "Total pesanan" in txt):
-                    send_message(cid, txt, keyboard=main_menu_keyboard())
-                else:
-                    send_message(cid, txt)
+            for cid, txt, kb in handle_update(upd):
+                send_message(cid, txt, keyboard=kb)
         except Exception as exc:  # noqa: BLE001
             app_obj.logger.exception("Telegram webhook error: %s", exc)
         return "ok"
