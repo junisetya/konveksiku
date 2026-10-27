@@ -675,8 +675,10 @@ def public_tracking(token):
         for p in photos:
             if not p["remote_url"]: continue
             figures.append(
-                f"<figure><a href='{html_escape(p['remote_url'])}' target='_blank' rel='noopener'>"
-                f"<img loading='lazy' src='{html_escape(p['remote_url'])}' alt='{html_escape(p['caption'] or p['stage'])}'></a>"
+                f"<figure><a href='{html_escape(p['remote_url'])}' target='_blank' "
+                f"rel='noopener noreferrer'>"
+                f"<img loading='lazy' referrerpolicy='no-referrer' "
+                f"src='{html_escape(p['remote_url'])}' alt='{html_escape(p['caption'] or p['stage'])}'></a>"
                 f"<figcaption><b>{html_escape(str(p['stage']).capitalize())}</b>"
                 f"{html_escape(p['caption'] or '')}</figcaption></figure>"
             )
