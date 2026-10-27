@@ -387,6 +387,70 @@ def _confirm_nota_draft(chat_id, d):
 
 
 # ---------------------------------------------------------------------------
+# Nota — panduan bertahap (ramah untuk yang tidak suka format rumit)
+# ---------------------------------------------------------------------------
+
+NOTA_G_STEPS = [
+    ("Nama konsumen?", "customer", "text"),
+    ("Nomor WhatsApp? (mis. 081234567890)", "wa", "wa"),
+    ("Model pakaian?", "garment", "text"),
+    ("Harga per pcs (Rp)?", "price", "int"),
+    ("Ukuran? (format M=4,L=6) — ketik - jika lewati", "sizes", "sizes"),
+    ("DP diterima (Rp)? — 0 kalau belum", "dp", "int"),
+    ("Estimasi selesai (hari)? — default 14", "days", "int"),
+]
+
+
+def _handle_nota_guided(chat_id, text):
+    low = text.lower()
+    if low in ("batal", "/batal"):
+        _clear_state(chat_id)
+        return "Wizard dibatalkan.", _menu_kb()
+
+    st = _state(chat_id)
+    step = st["data"].get("step", 0)
+    draft = dict(st["data"].get("draft", {}))
+    label, key, kind = NOTA_G_STEPS[step]
+    try:
+        if kind == "text":
+            if not text.strip():
+                raise ValidationError(label + " wajib diisi.")
+            draft[key] = text.strip()[:150]
+        elif kind == "wa":
+            draft[key] = normalize_wa(text)
+        elif kind == "int":
+            draft[key] = _to_int(text, label)
+        else:
+            draft[key] = ([] if text.strip() in ("", "-")
+                          else _parse_sizes(text))
+    except ValidationError as e:
+        return f"❌ {e}\nCoba lagi.", None
+
+    nxt = step + 1
+    if nxt < len(NOTA_G_STEPS):
+        st["data"]["step"] = nxt
+        st["data"]["draft"] = draft
+        return f"{nxt + 1}/{len(NOTA_G_STEPS)} · {NOTA_G_STEPS[nxt][0]}", None
+
+    sizes = draft.get("sizes") or []
+    qty = sum(s["qty"] for s in sizes) or 1
+    days = int(draft.get("days") or 14)
+    today = _date_today.today()
+    d = {
+        "customer": draft.get("customer", ""), "wa": draft.get("wa", ""),
+        "company": "", "address": "", "garment": draft.get("garment", ""),
+        "qty": qty, "price": draft.get("price", 0), "sizes": sizes,
+        "material": "", "color": "", "design": "",
+        "deal": today.isoformat(),
+        "target": (today + _timedelta(days=days)).isoformat(),
+        "target_payment": "", "dp": draft.get("dp", 0),
+        "dp_method": "Tunai", "agreement_note": "",
+    }
+    _set_state(chat_id, "nota_draft", {"draft": d})
+    return _nota_summary(d), _nota_confirm_keyboard()
+
+
+# ---------------------------------------------------------------------------
 # Tahap & Foto (pilih via tombol)
 # ---------------------------------------------------------------------------
 
@@ -528,8 +592,8 @@ def _handle_callback(chat_id, data):
     if data == "status":
         return _status(), _menu_kb()
     if data == "nota":
-        _set_state(chat_id, "nota_draft", {"draft": None})
-        return NOTA_HELP, None
+        _set_state(chat_id, "nota_g", {"step": 0, "draft": {}})
+        return "1/" + str(len(NOTA_G_STEPS)) + " · " + NOTA_G_STEPS[0][0], None
     if data == "tahap":
         _set_state(chat_id, "tahap_act")
         return "Pilih aksi tahap:", _tahap_act_keyboard()
@@ -569,8 +633,8 @@ def _handle_callback(chat_id, data):
         return text, kb
 
     if data == "perbaiki_nota":
-        _set_state(chat_id, "nota_draft", {"draft": None})
-        return "✏️ Kirim ulang isian nota:\n\n" + NOTA_HELP, None
+        _set_state(chat_id, "nota_g", {"step": 0, "draft": {}})
+        return "✏️ Ulangi isian nota:\n1/" + str(len(NOTA_G_STEPS)) + " · " + NOTA_G_STEPS[0][0], None
 
     if data == "order_manual":
         if not st:
@@ -664,6 +728,12 @@ def handle_update(update):
         _clear_state(chat_id)
         return [(chat_id, text_r, kb)]
 
+    # Nota: panduan bertahap
+    if st and st.get("flow") == "nota_g" and text:
+        res = _handle_nota_guided(chat_id, text)
+        if res:
+            return [(chat_id, res[0], res[1])]
+
     # Nota: satu baris isian (auto-detect juga walau belum klik Nota)
     nota_auto = (not st and "nama=" in text and "wa=" in text
                  and "model=" in text)
@@ -730,8 +800,9 @@ def handle_update(update):
         _clear_state(chat_id)
         return [(chat_id, "Wizard dibatalkan.", _menu_kb())]
     if low == "/nota":
-        _set_state(chat_id, "nota_draft", {"draft": None})
-        return [(chat_id, NOTA_HELP, None)]
+        _set_state(chat_id, "nota_g", {"step": 0, "draft": {}})
+        return [(chat_id, "1/" + str(len(NOTA_G_STEPS)) + " · "
+                 + NOTA_G_STEPS[0][0], None)]
     if low == "/tahap":
         _set_state(chat_id, "tahap_act")
         return [(chat_id, "Pilih aksi tahap:", _tahap_act_keyboard())]
