@@ -844,62 +844,72 @@ def _init_stages(c, order_id, target):
         )
 
 
+def _create_order_internal(c, d):
+    """Buat pesanan di dalam satu koneksi. Kembalikan (id, number, token).
+
+    Dipakai oleh route HTTP dan bot Telegram agar aturan pembuatan pesanan
+    hanya ada di satu tempat.
+    """
+    s = settings(c)
+    prefix = re.sub(r"[^A-Z0-9]", "", (s.get("prefix") or "RJ").upper())[:8] or "RJ"
+    key = prefix + "-" + datetime.now(WIB).strftime("%Y%m")
+    seq = c.execute(
+        "INSERT INTO counters(key,value) VALUES(%s,1) "
+        "ON CONFLICT(key) DO UPDATE SET value = counters.value + 1 "
+        "RETURNING value", (key,)
+    ).fetchone()["value"]
+    number = f"{key}-{seq:04d}"
+    ident = uuid.uuid4().hex
+    token = _mig.new_token()
+    stamp = now()
+    dp = d["dp"]
+    _customer_row(c, d["customer"], d["wa"], d["company"], d["address"])
+    legacy = {
+        "created": stamp, "life": "active", "final_label": "",
+        "wa": d["wa"], "company": d["company"], "address": d["address"],
+        "customer_note": d["customer_note"],
+        "agreement_note": d["agreement_note"],
+        "work_start": d["work_start"], "target_payment": d["target_payment"],
+        "discount": d["discount"], "extra": d["extra"],
+        "garment": d["items"][0]["garment"],
+        "special": d["agreement_note"], "shipping": None, "received": "",
+        "ready_at": "", "history": [],
+        "qty": sum(i["qty"] for i in d["items"]),
+        "sizes": {s_["label"]: s_["qty"] for s_ in d["items"][0]["sizes"]},
+        "total": d["total"], "deal": d["deal"], "target": d["target"],
+        "material": d["items"][0]["material"],
+        "color": d["items"][0]["color"],
+        "spec": d["items"][0]["design"],
+    }
+    c.execute(
+        "INSERT INTO orders(id,number,version,data,customer_name,agreed_date,"
+        "tracking_token,total,updated_at) "
+        "VALUES(%s,%s,1,%s,%s,%s,%s,%s,%s)",
+        (ident, number, json.dumps(legacy), d["customer"], d["deal"],
+         token, d["total"], stamp)
+    )
+    c.execute("UPDATE orders SET target=%s WHERE id=%s", (d["target"], ident))
+    _write_items(c, ident, d["items"])
+    _init_stages(c, ident, d["target"])
+    _log(c, ident, f"Pesanan {number} dibuat dari kesepakatan tanggal {d['deal']}",
+         {"total": d["total"]}, visible=True)
+    if dp:
+        c.execute(
+            "INSERT INTO payments(id,order_id,amount,date,method,note,reference,"
+            "kind,recorded_at) VALUES(%s,%s,%s,%s,%s,%s,%s,'DP',%s)",
+            (uuid.uuid4().hex, ident, dp,
+             d["dp_date"], d["dp_method"], d["dp_note"], "", stamp)
+        )
+        _log(c, ident, "DP diterima", {"jumlah": dp}, visible=True)
+    return ident, number, token
+
+
 @app.post("/api/v2/orders")
 @authenticated
 def v2_create_order():
     d = _validate_order_payload(request.get_json())
-    dp = d["dp"]
     with connect() as c:
-        s = settings(c)
-        prefix = re.sub(r"[^A-Z0-9]", "", (s.get("prefix") or "RJ").upper())[:8] or "RJ"
-        key = prefix + "-" + datetime.now(WIB).strftime("%Y%m")
-        seq = c.execute(
-            "INSERT INTO counters(key,value) VALUES(%s,1) "
-            "ON CONFLICT(key) DO UPDATE SET value = counters.value + 1 "
-            "RETURNING value", (key,)
-        ).fetchone()["value"]
-        number = f"{key}-{seq:04d}"
-        ident = uuid.uuid4().hex
-        token = _mig.new_token()
-        stamp = now()
-        _customer_row(c, d["customer"], d["wa"], d["company"], d["address"])
-        legacy = {
-            "created": stamp, "life": "active", "final_label": "",
-            "wa": d["wa"], "company": d["company"], "address": d["address"],
-            "customer_note": d["customer_note"],
-            "agreement_note": d["agreement_note"],
-            "work_start": d["work_start"], "target_payment": d["target_payment"],
-            "discount": d["discount"], "extra": d["extra"],
-            "garment": d["items"][0]["garment"],
-            "special": d["agreement_note"], "shipping": None, "received": "",
-            "ready_at": "", "history": [],
-            "qty": sum(i["qty"] for i in d["items"]),
-            "sizes": {s["label"]: s["qty"] for s in d["items"][0]["sizes"]},
-            "total": d["total"], "deal": d["deal"], "target": d["target"],
-            "material": d["items"][0]["material"],
-            "color": d["items"][0]["color"],
-            "spec": d["items"][0]["design"],
-        }
-        c.execute(
-            "INSERT INTO orders(id,number,version,data,customer_name,agreed_date,"
-            "tracking_token,total,updated_at) "
-            "VALUES(%s,%s,1,%s,%s,%s,%s,%s,%s)",
-            (ident, number, json.dumps(legacy), d["customer"], d["deal"],
-             token, d["total"], stamp)
-        )
-        c.execute("UPDATE orders SET target=%s WHERE id=%s", (d["target"], ident))
-        _write_items(c, ident, d["items"])
-        _init_stages(c, ident, d["target"])
-        _log(c, ident, f"Pesanan {number} dibuat dari kesepakatan tanggal {d['deal']}",
-             {"total": d["total"]}, visible=True)
-        if dp:
-            c.execute(
-                "INSERT INTO payments(id,order_id,amount,date,method,note,reference,"
-                "kind,recorded_at) VALUES(%s,%s,%s,%s,%s,%s,%s,'DP',%s)",
-                (uuid.uuid4().hex, ident, dp,
-                 d["dp_date"], d["dp_method"], d["dp_note"], "", stamp)
-            )
-            _log(c, ident, "DP diterima", {"jumlah": dp}, visible=True)
+        ident, number, token = _create_order_internal(c, d)
     return jsonify(id=ident, number=number, urls=order_urls(ident, number, token))
 
 
@@ -958,95 +968,100 @@ def v2_edit_order(ident):
     return jsonify(ok=True)
 
 
+def _stage_action_internal(c, ident, d):
+    """Jalankan aksi tahap dalam satu koneksi (dipakai route & bot)."""
+    action = d.get("action")
+    key = text(d.get("stage", ""), 20)
+    require(key in STAGE_KEYS, "Tahap tidak valid.")
+    o = load_order(c, ident)
+    require(o is not None, "Pesanan tidak ditemukan.")
+    require(o["life"] == "active", "Pesanan tidak sedang aktif.")
+    stages = {s["key"]: s for s in o["stages"]}
+    s = stages[key]
+    idx = STAGE_KEYS.index(key)
+
+    def prev_done():
+        return idx == 0 or stages[STAGE_KEYS[idx - 1]]["state"] == "done"
+
+    if action == "start":
+        require(s["state"] == "pending", "Tahap ini sudah dimulai.")
+        require(prev_done(), "Selesaikan tahap sebelumnya terlebih dahulu.")
+        start = _date(d.get("start") or _today_wib(), "Tanggal mulai")
+        require(start <= _today_wib(), "Tanggal mulai tidak boleh di masa depan.")
+        require(start >= o["deal"], "Tanggal mulai tidak boleh sebelum kesepakatan.")
+        target = _date(d.get("target", ""), "Target tahap", optional=True)
+        if target:
+            require(target >= start, "Target tahap tidak boleh sebelum tanggal mulai.")
+        c.execute(
+            "UPDATE production_stages SET state='running', start_date=%s, "
+            "started_at=%s, target_date=%s, note=%s WHERE order_id=%s AND stage_key=%s",
+            (start, now(), target, text(d.get("note", ""), 3000), ident, key)
+        )
+        _log(c, ident, f"Tahap {STAGE_LABELS[key]} dimulai",
+             {"tanggal": start, "target": target}, visible=True)
+        if key == "finishing":
+            _log(c, ident, "Checklist finishing dapat dicentang", visible=False)
+    elif action == "finish":
+        require(s["state"] == "running", "Mulai tahap ini terlebih dahulu.")
+        if key == "finishing":
+            pending = [x["label"] for x in o["checklist"] if not x["done"]]
+            require(not pending,
+                    "Checklist finishing belum lengkap: " + "; ".join(pending))
+        if key == "potong":
+            require(prev_done(), "Tahap sebelumnya belum selesai.")
+        stamp = now()
+        c.execute(
+            "UPDATE production_stages SET state='done', finished_at=%s "
+            "WHERE order_id=%s AND stage_key=%s", (stamp, ident, key)
+        )
+        if key == "finishing":
+            legacy = json.loads(c.execute("SELECT data FROM orders WHERE id=%s",
+                                          (ident,)).fetchone()["data"])
+            legacy["ready_at"] = stamp
+            c.execute("UPDATE orders SET data=%s WHERE id=%s",
+                      (json.dumps(legacy), ident))
+            _log(c, ident, "Finishing selesai — pesanan siap diserahkan",
+                 {"waktu": stamp}, visible=True)
+        else:
+            _log(c, ident, f"Tahap {STAGE_LABELS[key]} selesai",
+                 {"waktu": stamp}, visible=True)
+    elif action == "reopen":
+        reason = text(d.get("reason", ""), 2000)
+        require(reason, "Alasan membuka kembali tahap wajib diisi.")
+        require(s["state"] == "done", "Tahap ini belum selesai.")
+        if key != "serah":
+            later = [STAGE_KEYS[i] for i in range(idx + 1, len(STAGE_KEYS))
+                     if stages[STAGE_KEYS[i]]["state"] != "pending"]
+            require(not later,
+                    "Buka kembali tahap setelahnya lebih dulu (urutan: "
+                    + ", ".join(STAGE_LABELS[x] for x in reversed(later)) + ").")
+        c.execute(
+            "UPDATE production_stages SET state='running', finished_at='' "
+            "WHERE order_id=%s AND stage_key=%s", (ident, key)
+        )
+        _log(c, ident, f"Tahap {STAGE_LABELS[key]} dibuka kembali", {"alasan": reason},
+             visible=False)
+    elif action == "note":
+        c.execute(
+            "UPDATE production_stages SET note=%s, target_date=%s "
+            "WHERE order_id=%s AND stage_key=%s",
+            (text(d.get("note", ""), 3000),
+             _date(d.get("target", ""), "Target tahap", optional=True) or s["target"],
+             ident, key)
+        )
+        _log(c, ident, f"Catatan tahap {STAGE_LABELS[key]} diperbarui")
+    else:
+        raise ValidationError("Aksi tahap tidak dikenali.")
+    _bump(c, ident)
+
+
 @app.post("/api/v2/orders/<ident>/stage")
 @authenticated
 def v2_stage(ident):
     """Aksi tahap: start, finish, reopen, note, target."""
     d = request.get_json() or {}
-    action = d.get("action")
-    key = text(d.get("stage", ""), 20)
-    require(key in STAGE_KEYS, "Tahap tidak valid.")
     with connect() as c:
-        o = load_order(c, ident)
-        require(o is not None, "Pesanan tidak ditemukan.")
-        require(o["life"] == "active", "Pesanan tidak sedang aktif.")
-        stages = {s["key"]: s for s in o["stages"]}
-        s = stages[key]
-        idx = STAGE_KEYS.index(key)
-
-        def prev_done():
-            return idx == 0 or stages[STAGE_KEYS[idx - 1]]["state"] == "done"
-
-        if action == "start":
-            require(s["state"] == "pending", "Tahap ini sudah dimulai.")
-            require(prev_done(), "Selesaikan tahap sebelumnya terlebih dahulu.")
-            start = _date(d.get("start") or _today_wib(), "Tanggal mulai")
-            require(start <= _today_wib(), "Tanggal mulai tidak boleh di masa depan.")
-            require(start >= o["deal"], "Tanggal mulai tidak boleh sebelum kesepakatan.")
-            target = _date(d.get("target", ""), "Target tahap", optional=True)
-            if target:
-                require(target >= start, "Target tahap tidak boleh sebelum tanggal mulai.")
-            c.execute(
-                "UPDATE production_stages SET state='running', start_date=%s, "
-                "started_at=%s, target_date=%s, note=%s WHERE order_id=%s AND stage_key=%s",
-                (start, now(), target, text(d.get("note", ""), 3000), ident, key)
-            )
-            _log(c, ident, f"Tahap {STAGE_LABELS[key]} dimulai",
-                 {"tanggal": start, "target": target}, visible=True)
-            if key == "finishing":
-                _log(c, ident, "Checklist finishing dapat dicentang", visible=False)
-        elif action == "finish":
-            require(s["state"] == "running", "Mulai tahap ini terlebih dahulu.")
-            if key == "finishing":
-                pending = [x["label"] for x in o["checklist"] if not x["done"]]
-                require(not pending,
-                        "Checklist finishing belum lengkap: " + "; ".join(pending))
-            if key == "potong":
-                require(prev_done(), "Tahap sebelumnya belum selesai.")
-            stamp = now()
-            c.execute(
-                "UPDATE production_stages SET state='done', finished_at=%s "
-                "WHERE order_id=%s AND stage_key=%s", (stamp, ident, key)
-            )
-            if key == "finishing":
-                legacy = json.loads(c.execute("SELECT data FROM orders WHERE id=%s",
-                                              (ident,)).fetchone()["data"])
-                legacy["ready_at"] = stamp
-                c.execute("UPDATE orders SET data=%s WHERE id=%s",
-                          (json.dumps(legacy), ident))
-                _log(c, ident, "Finishing selesai — pesanan siap diserahkan",
-                     {"waktu": stamp}, visible=True)
-            else:
-                _log(c, ident, f"Tahap {STAGE_LABELS[key]} selesai",
-                     {"waktu": stamp}, visible=True)
-        elif action == "reopen":
-            reason = text(d.get("reason", ""), 2000)
-            require(reason, "Alasan membuka kembali tahap wajib diisi.")
-            require(s["state"] == "done", "Tahap ini belum selesai.")
-            if key != "serah":
-                later = [STAGE_KEYS[i] for i in range(idx + 1, len(STAGE_KEYS))
-                         if stages[STAGE_KEYS[i]]["state"] != "pending"]
-                require(not later,
-                        "Buka kembali tahap setelahnya lebih dulu (urutan: "
-                        + ", ".join(STAGE_LABELS[x] for x in reversed(later)) + ").")
-            c.execute(
-                "UPDATE production_stages SET state='running', finished_at='' "
-                "WHERE order_id=%s AND stage_key=%s", (ident, key)
-            )
-            _log(c, ident, f"Tahap {STAGE_LABELS[key]} dibuka kembali", {"alasan": reason},
-                 visible=False)
-        elif action == "note":
-            c.execute(
-                "UPDATE production_stages SET note=%s, target_date=%s "
-                "WHERE order_id=%s AND stage_key=%s",
-                (text(d.get("note", ""), 3000),
-                 _date(d.get("target", ""), "Target tahap", optional=True) or s["target"],
-                 ident, key)
-            )
-            _log(c, ident, f"Catatan tahap {STAGE_LABELS[key]} diperbarui")
-        else:
-            raise ValidationError("Aksi tahap tidak dikenali.")
-        _bump(c, ident)
+        _stage_action_internal(c, ident, d)
     return jsonify(ok=True)
 
 
@@ -1311,35 +1326,19 @@ def v2_send_wa(ident):
     return jsonify(ok=True, message="Pesan berhasil dikirim via Fonnte.")
 
 
-@app.post("/api/v2/orders/<ident>/upload-photo")
-@authenticated
-def v2_upload_photo(ident):
-    """Upload foto ke ImageKit, simpan URL ke database."""
+def _upload_photo_internal(ident, stage, caption, image_data):
+    """Upload foto base64 ke ImageKit lalu simpan remote_url (dipakai route & bot)."""
     import os
-    
-    d = request.get_json() or {}
-    stage = text(d.get("stage", ""), 50)
-    caption = text(d.get("caption", ""), 200)
-    image_data = d.get("data", "")  # format: "data:image/jpeg;base64,..."
-    
-    require(stage in ["potong", "jahit", "finishing", "serah", "umum"], "Tahap tidak valid.")
-    require(image_data.startswith("data:image/"), "Format foto tidak valid.")
-    
-    # Ambil config ImageKit
     ik_private = os.getenv("IMAGEKIT_PRIVATE_KEY", "").strip()
     ik_endpoint = os.getenv("IMAGEKIT_URL_ENDPOINT", "").strip().rstrip("/")
     require(ik_private and ik_endpoint, "Konfigurasi ImageKit belum diset di .env.")
-    
-    # Decode base64
+    require(image_data.startswith("data:image/"), "Format foto tidak valid.")
     header, b64_str = image_data.split(",", 1)
     raw_img = base64.b64decode(b64_str)
     require(len(raw_img) <= 5 * 1024 * 1024, "Foto maksimal 5MB.")
-    
-    # Upload ke ImageKit via API
     import uuid as _uuid
     file_name = f"progres_{ident}_{stage}_{_uuid.uuid4().hex[:8]}.jpg"
     boundary = "----WebKitFormBoundary" + _uuid.uuid4().hex
-    
     body = []
     body.append(f"--{boundary}".encode())
     body.append(f'Content-Disposition: form-data; name="file"; filename="{file_name}"'.encode())
@@ -1350,27 +1349,21 @@ def v2_upload_photo(ident):
     body.append(file_name.encode())
     body.append(f"--{boundary}--".encode())
     payload = b"\r\n".join(body)
-    
     req = urllib.request.Request("https://upload.imagekit.io/api/v1/files/upload", data=payload)
     req.add_header("Authorization", "Basic " + base64.b64encode(f"{ik_private}:".encode()).decode())
     req.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
-    
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             res_data = _json.loads(resp.read().decode())
     except urllib.error.HTTPError as e:
         err_msg = e.read().decode()
-        return jsonify(error=f"Gagal upload ke ImageKit: {err_msg}"), 500
-        
+        raise ValidationError(f"Gagal upload ke ImageKit: {err_msg}")
     public_url = res_data.get("url")
     require(public_url, "ImageKit tidak mengembalikan URL.")
-    
-    # Simpan ke database Supabase (tabel photos bawaan app.py)
     photo_id = _uuid.uuid4().hex
     with connect() as c:
         o = load_order(c, ident)
         require(o is not None, "Pesanan tidak ditemukan.")
-        
         c.execute(
             "INSERT INTO photos(id, order_id, stage, caption, uploaded, mime, data, remote_url, remote_id) "
             "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)",
@@ -1378,7 +1371,20 @@ def v2_upload_photo(ident):
         )
         _log(c, ident, f"Foto {stage} diunggah", {"url": public_url}, visible=True)
         _bump(c, ident)
-        
+    return public_url
+
+
+@app.post("/api/v2/orders/<ident>/upload-photo")
+@authenticated
+def v2_upload_photo(ident):
+    """Upload foto ke ImageKit, simpan URL ke database."""
+    d = request.get_json() or {}
+    stage = text(d.get("stage", ""), 50)
+    caption = text(d.get("caption", ""), 200)
+    image_data = d.get("data", "")  # format: "data:image/jpeg;base64,..."
+    require(stage in ["potong", "jahit", "finishing", "serah", "umum"], "Tahap tidak valid.")
+    require(image_data.startswith("data:image/"), "Format foto tidak valid.")
+    public_url = _upload_photo_internal(ident, stage, caption, image_data)
     return jsonify(ok=True, url=public_url)
 
 

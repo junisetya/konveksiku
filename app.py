@@ -2046,6 +2046,9 @@ if __name__ == "__main__":
 import rofi_api_v2  # noqa: E402,F401  (mendaftarkan route v2 + migrasi)
 from rofi_ui import HTML  # noqa: E402
 
+import telegram_bot  # noqa: E402,F401  (bot Telegram: webhook /telegram/webhook)
+telegram_bot.setup(app)
+
 @app.get("/")
 def index():
     return Response(HTML, mimetype="text/html")

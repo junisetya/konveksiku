@@ -1,0 +1,43 @@
+# Render.com Blueprint — Rofi Konveksi
+# Cara pakai (Render):
+#   1. Repo ini di-hubungkan ke GitHub.
+#   2. Di Render: New Blueprint Instance -> pilih repo ini -> Apply.
+#   3. Render akan membuat service "rofi-konveksi" dari Dockerfile ini.
+#   4. Isi nilai-nilai secret (sync: false) di dashboard service -> Environment.
+#   5. Ganti APP_ORIGIN dengan URL publik service (mis. https://rofi-konveksi.onrender.com).
+#   6. Health check otomatis memakai /api/healthz.
+
+services:
+  - type: web
+    name: rofi-konveksi
+    runtime: docker
+    plan: starter
+    healthCheckPath: /api/healthz
+    autoDeploy: true
+    # Jika perlu custom domain, tambah di dashboard (bukan di file ini).
+    envVars:
+      # --- Production base URL: wajib diisi sesuai URL service publik ---
+      - key: APP_ORIGIN
+        value: https://rofi-konveksi.onrender.com
+
+      # --- Rahasia: isi di dashboard Render (Environment -> secret value) ---
+      - key: DATABASE_URL
+        sync: false
+      - key: SECRET_KEY
+        sync: false
+      - key: OWNER_PASSWORD
+        sync: false
+      - key: FONNTE_TOKEN
+        sync: false
+      - key: IMAGEKIT_PRIVATE_KEY
+        sync: false
+      - key: IMAGEKIT_URL_ENDPOINT
+        sync: false
+
+      # --- Telegram bot ---
+      - key: TELEGRAM_TOKEN
+        sync: false
+      - key: TELEGRAM_ALLOWED_IDS
+        sync: false
+      - key: TELEGRAM_WEBHOOK_SECRET
+        sync: false
