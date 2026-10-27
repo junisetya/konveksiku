@@ -64,9 +64,25 @@ def _telegram(method, payload=None):
         return {"ok": False, "description": str(e)}
 
 
-def send_message(chat_id, text):
-    if text:
-        _telegram("sendMessage", {"chat_id": chat_id, "text": text})
+def send_message(chat_id, text, keyboard=None):
+    if not text:
+        return
+    payload = {"chat_id": chat_id, "text": text}
+    if keyboard:
+        payload["reply_markup"] = {"inline_keyboard": keyboard}
+    _telegram("sendMessage", payload)
+
+
+def main_menu_keyboard():
+    """Tombol menu utama (pengganti perintah /...)."""
+    return [
+        [{"text": "📝 Nota", "callback_data": "nota"},
+         {"text": "🔄 Tahap", "callback_data": "tahap"}],
+        [{"text": "📷 Foto", "callback_data": "foto"},
+         {"text": "ℹ️ Status", "callback_data": "status"}],
+        [{"text": "❓ Bantuan", "callback_data": "bantuan"},
+         {"text": "🚫 Batal", "callback_data": "batal"}],
+    ]
 
 
 def _order_by_number(number):
@@ -465,12 +481,13 @@ def _status():
 
 HELP = (
     "🤖 Rofi Konveksi — Bot Telegram\n"
-    "/nota — wizard buat nota & kirim ke WhatsApp konsumen\n"
-    "/tahap <aksi> <kode> [catatan] — mulai/selesai/catatan/ulang\n"
-    "/foto — upload foto tahap (ImageKit) → muncul di link tracking\n"
-    "/status — status Fonnte & pesanan\n"
-    "/batal — batalkan wizard yang berjalan\n"
-    "/bantuan — perintah ini"
+    "Gunakan tombol di bawah, atau ketik perintah /…\n"
+    "📝 Nota — wizard buat nota & kirim ke WhatsApp konsumen\n"
+    "🔄 Tahap — mulai/selesai/catatan/ulang tahap\n"
+    "📷 Foto — upload foto tahap (ImageKit) → muncul di link tracking\n"
+    "ℹ️ Status — status Fonnte & pesanan\n"
+    "🚫 Batal — batalkan wizard yang berjalan\n"
+    "❓ Bantuan — menu ini"
 )
 
 
@@ -567,9 +584,26 @@ def setup(app_obj):
         ):
             return "", 403
         upd = request.get_json(silent=True) or {}
+        use_menu = False
         try:
+            cbq = upd.get("callback_query")
+            if cbq:
+                use_menu = True
+                chat_id = cbq.get("message", {}).get("chat", {}).get("id")
+                data = str(cbq.get("data") or "")
+                _telegram("answerCallbackQuery", {"callback_query_id": cbq.get("id")})
+                text = data if data.startswith("/") else "/" + data
+                upd = {"message": {"chat": {"id": chat_id}, "text": text}}
+
             for cid, txt in handle_update(upd):
-                send_message(cid, txt)
+                if not txt:
+                    continue
+                if (use_menu or txt.startswith("✅") or txt.startswith("Fonnte")
+                        or txt.startswith("Device") or txt.startswith("🤖")
+                        or "Total pesanan" in txt):
+                    send_message(cid, txt, keyboard=main_menu_keyboard())
+                else:
+                    send_message(cid, txt)
         except Exception as exc:  # noqa: BLE001
             app_obj.logger.exception("Telegram webhook error: %s", exc)
         return "ok"
