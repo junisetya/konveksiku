@@ -211,6 +211,14 @@ def _parse_sizes(raw):
     return out
 
 
+def _to_int(value, label):
+    """Ambil angka dari input (toleransi 175.000 / 175,000)."""
+    m = re.search(r"\d+", str(value).replace(".", "").replace(",", ""))
+    if not m:
+        raise ValidationError(f"{label} harus angka.")
+    return int(m.group(0))
+
+
 def parse_nota_line(text):
     text = text.strip()
     if text.lower().startswith("/nota"):
@@ -240,9 +248,9 @@ def parse_nota_line(text):
     customer = raw["nama"]
     wa = normalize_wa(raw["wa"])
     garment = raw["model"]
-    price = int(raw["harga"])
+    price = _to_int(raw["harga"], "Harga")
     sizes = _parse_sizes(raw.get("ukuran", "") or raw.get("sizes", ""))
-    qty = int(raw.get("qty") or 0)
+    qty = _to_int(raw.get("qty") or "0", "Jumlah") if raw.get("qty") else 0
     total_sizes = sum(s["qty"] for s in sizes)
     if sizes and not qty:
         qty = total_sizes
@@ -257,7 +265,7 @@ def parse_nota_line(text):
     today = _date_today.today()
     deal = raw.get("deal") or today.isoformat()
     target = raw.get("target") or (today + _timedelta(days=14)).isoformat()
-    dp = int(raw.get("dp") or 0)
+    dp = _to_int(raw.get("dp") or "0", "DP") if raw.get("dp") else 0
     return {
         "customer": customer, "wa": wa,
         "company": raw.get("company", ""),
@@ -576,14 +584,19 @@ def handle_update(update):
         _clear_state(chat_id)
         return [(chat_id, text_r, kb)]
 
-    # Nota: satu baris isian
-    if st and st.get("flow") == "nota_draft" and text:
+    # Nota: satu baris isian (auto-detect juga walau belum klik Nota)
+    nota_auto = (not st and "nama=" in text and "wa=" in text
+                 and "model=" in text)
+    if text and ((st and st.get("flow") == "nota_draft") or nota_auto):
         try:
             draft = parse_nota_line(text)
             _validate_order_payload(_draft_payload(draft))
-        except ValidationError as e:
+        except (ValidationError, ValueError, TypeError) as e:
             return [(chat_id, f"❌ {e}\n\n{NOTA_HELP}", None)]
-        st["data"]["draft"] = draft
+        if st is None:
+            _set_state(chat_id, "nota_draft", {"draft": draft})
+        else:
+            st["data"]["draft"] = draft
         return [(chat_id, _nota_summary(draft), _nota_confirm_keyboard())]
 
     # Ketik nomor pesanan manual
