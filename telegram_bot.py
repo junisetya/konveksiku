@@ -16,6 +16,7 @@ import os
 import re
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import date as _date_today
 from datetime import timedelta as _timedelta
@@ -434,12 +435,23 @@ def upload_photo(chat_id, msg, order_number, stage):
     file_path = (info.get("result") or {}).get("file_path")
     if not file_path:
         return "❌ Gagal mengambil file foto dari Telegram.", _menu_kb()
-    try:
-        url = f"{API_BASE}/bot{TOKEN}/{file_path}"
-        with urllib.request.urlopen(url, timeout=30) as resp:
-            raw = resp.read()
-    except Exception as e:  # noqa: BLE001
-        return f"❌ Gagal mengunduh foto: {e}", _menu_kb()
+    file_path = str(file_path).lstrip("/")
+    download_url = f"{API_BASE}/bot{TOKEN}/" + urllib.parse.quote(file_path, safe="/")
+    raw = None
+    last_err = None
+    for attempt in range(2):
+        try:
+            with urllib.request.urlopen(download_url, timeout=30) as resp:
+                raw = resp.read()
+            break
+        except urllib.error.HTTPError as e:
+            last_err = f"HTTP {e.code}"
+            time.sleep(1)
+        except Exception as e:  # noqa: BLE001
+            last_err = str(e)
+            break
+    if raw is None:
+        return f"❌ Gagal mengunduh foto ({last_err}). Coba kirim ulang foto.", _menu_kb()
     if len(raw) > 5 * 1024 * 1024:
         return "❌ Foto maksimal 5MB.", _menu_kb()
     data_uri = "data:image/jpeg;base64," + base64.b64encode(raw).decode()
