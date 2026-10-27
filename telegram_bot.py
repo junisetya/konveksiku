@@ -327,14 +327,11 @@ def _handle_nota(chat_id, text):
     _set_state(chat_id, "nota", step=st["step"], data=data,
                items=items, cur=cur)
     n = len(items) + 1
-    key = "confirm" if st["step"] == 18 else (
-        "item_garment" if 4 <= st["step"] <= 10 else "?")
-    if key == "?":
-        keys = ["customer", "wa", "company", "address", "item_garment",
-                "item_qty", "item_price", "item_sizes", "item_material",
-                "item_color", "item_design", "more_items", "dp", "dp_method",
-                "deal", "target", "target_payment", "agreement_note", "confirm"]
-        key = keys[st["step"]] if st["step"] < len(keys) else "confirm"
+    keys = ["customer", "wa", "company", "address", "item_garment",
+            "item_qty", "item_price", "item_sizes", "item_material",
+            "item_color", "item_design", "more_items", "dp", "dp_method",
+            "deal", "target", "target_payment", "agreement_note", "confirm"]
+    key = keys[st["step"]] if 0 <= st["step"] < len(keys) else "confirm"
     return _nota_prompt(key, n)
 
 
