@@ -1,4 +1,5 @@
-import os
+import subprocess
+subprocess.check_call(["python", "-m", "pip", "install", "-r", "requirements.txt"])import os
 import re
 import io
 import json
